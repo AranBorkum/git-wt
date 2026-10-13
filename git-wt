@@ -1,175 +1,87 @@
 #!/usr/bin/env bash
+#
+# git-wt — git worktree helpers.
+# https://github.com/AranBorkum/git-wt
 
 set -euo pipefail
 
-readonly VERSION="0.1.0"
-
-create_worktree() {
-	# Usage check
-	if [ $# -lt 1 ]; then
-		echo "Usage: git worktree-create <branch-name> [base-branch]"
-		echo ""
-		echo "This script will:"
-		echo "  1. Create a new git worktree in a directory derived from the branch name"
-		echo "  2. Create a new branch (or use existing one)"
-		echo "  3. Change into the worktree directory"
-		echo "  4. Run .worktree script from the repository root (if it exists)"
-		echo ""
-		echo "Arguments:"
-		echo "  branch-name   Name of the branch to create/checkout"
-		echo "  base-branch   (Optional) Branch to base the new branch on (default: current HEAD)"
-		exit 1
-	fi
-
-	BRANCH_NAME="$1"
-	BASE_BRANCH="${2:-HEAD}"
-
-	# Validate we're in a git repository
-	if ! git rev-parse --git-dir >/dev/null 2>&1; then
-		echo "❌ Error: Not in a git repository"
-		exit 1
-	fi
-
-	# Get repository root (handles both bare and regular repos)
-	if git rev-parse --is-bare-repository >/dev/null 2>&1 && [ "$(git rev-parse --is-bare-repository)" = "true" ]; then
-		# We're in a bare repository
-		REPO_ROOT=$(pwd)
-	else
-		# We're in a regular repo or worktree
-		GIT_DIR=$(git rev-parse --git-common-dir)
-		# If git-common-dir is relative, make it absolute
-		if [[ "$GIT_DIR" != /* ]]; then
-			GIT_DIR=$(cd "$GIT_DIR" && pwd)
-		fi
-		REPO_ROOT=$(dirname "$GIT_DIR")
-	fi
-
-	echo "🌳 Git Worktree Create"
-	echo "======================"
-	echo ""
-	echo "Branch:     $BRANCH_NAME"
-	echo "Base:       $BASE_BRANCH"
-	echo "Repo root:  $REPO_ROOT"
-	echo ""
-
-	# Derive worktree path from branch name (preserve forward slashes for nested directories)
-	WORKTREE_DIR="$REPO_ROOT/$BRANCH_NAME"
-
-	# Check if worktree directory already exists
-	if [ -d "$WORKTREE_DIR" ]; then
-		echo "❌ Error: Worktree directory already exists: $WORKTREE_DIR"
-		exit 1
-	fi
-
-	# Create parent directories if branch name contains slashes
-	PARENT_DIR=$(dirname "$WORKTREE_DIR")
-	if [ "$PARENT_DIR" != "$REPO_ROOT" ] && [ ! -d "$PARENT_DIR" ]; then
-		echo "📁 Creating parent directory: $PARENT_DIR"
-		mkdir -p "$PARENT_DIR"
-		echo "✓ Parent directory created"
-		echo ""
-	fi
-
-	# Check if branch exists
-	BRANCH_EXISTS=false
-	if git show-ref --verify --quiet "refs/heads/$BRANCH_NAME"; then
-		BRANCH_EXISTS=true
-		echo "ℹ️  Branch '$BRANCH_NAME' already exists"
-		echo ""
-		read -p "Use existing branch? (y/n): " use_existing
-		if [[ ! "$use_existing" =~ ^[Yy]$ ]]; then
-			echo "Aborted."
-			exit 1
-		fi
-		echo ""
-	fi
-
-	# Create worktree
-	echo "📂 Creating worktree at: $WORKTREE_DIR"
-	if [ "$BRANCH_EXISTS" = true ]; then
-		# Checkout existing branch
-		if ! git worktree add "$WORKTREE_DIR" "$BRANCH_NAME"; then
-			echo "❌ Error: Failed to create worktree"
-			exit 1
-		fi
-	else
-		# Create new branch
-		if ! git worktree add -b "$BRANCH_NAME" "$WORKTREE_DIR" "$BASE_BRANCH"; then
-			echo "❌ Error: Failed to create worktree with new branch"
-			exit 1
-		fi
-	fi
-
-	echo "✓ Worktree created"
-	echo ""
-
-	# Change to worktree directory
-	cd "$WORKTREE_DIR"
-	echo "📍 Changed to: $WORKTREE_DIR"
-	echo ""
-
-	# Run .worktree script if it exists at repo root
-	WORKSPACE_SCRIPT="$REPO_ROOT/.worktree"
-	if [ -f "$WORKSPACE_SCRIPT" ] && [ -x "$WORKSPACE_SCRIPT" ]; then
-		echo "🚀 Running .worktree script..."
-		echo ""
-		if "$WORKSPACE_SCRIPT"; then
-			echo ""
-			echo "✓ .worktree script completed"
-		else
-			echo ""
-			echo "⚠️  Warning: .worktree script failed (exit code: $?)"
-		fi
-	elif [ -f "$WORKSPACE_SCRIPT" ]; then
-		echo "⚠️  Warning: .worktree script found but not executable"
-		echo "   Run: chmod +x $WORKSPACE_SCRIPT"
-	else
-		echo "ℹ️  No .worktree script found at: $WORKSPACE_SCRIPT"
-	fi
-
-	echo ""
-	echo "✅ Done!"
-	echo ""
-	echo "To change to this worktree, run:"
-	echo "  cd $WORKTREE_DIR"
+# Resolve the directory holding this script, following symlinks so the command
+# works when linked onto PATH from somewhere else.
+resolve_lib_dir() {
+	local source="${BASH_SOURCE[0]}" dir
+	while [ -L "$source" ]; do
+		dir=$(cd -P "$(dirname "$source")" && pwd)
+		source=$(readlink "$source")
+		[[ "$source" != /* ]] && source="$dir/$source"
+	done
+	cd -P "$(dirname "$source")" && pwd
 }
 
-delete_worktree() {
-	git worktree remove --force "$(git worktree list --porcelain | awk '/worktree /{print $2}' | fzf)"
-}
+GIT_WT_ROOT=$(resolve_lib_dir)
+readonly GIT_WT_ROOT
+
+# Find the library directory. Checked in order: an explicit override, the
+# in-repo layout, and the installed layout (bin/ and lib/git-wt/ under a
+# shared prefix, as created by `make install`).
+if [ -z "${GIT_WT_LIB:-}" ]; then
+	for candidate in "$GIT_WT_ROOT/lib" "$GIT_WT_ROOT/../lib/git-wt"; do
+		if [ -f "$candidate/version.sh" ]; then
+			GIT_WT_LIB=$(cd "$candidate" && pwd)
+			break
+		fi
+	done
+fi
+
+if [ -z "${GIT_WT_LIB:-}" ] || [ ! -f "$GIT_WT_LIB/version.sh" ]; then
+	printf '❌ Error: could not locate the git-wt lib directory\n' >&2
+	printf '   Set GIT_WT_LIB to the directory containing version.sh\n' >&2
+	exit 1
+fi
+readonly GIT_WT_LIB
+
+# shellcheck source=lib/version.sh
+source "$GIT_WT_LIB/version.sh"
+# shellcheck source=lib/output.sh
+source "$GIT_WT_LIB/output.sh"
+# shellcheck source=lib/git.sh
+source "$GIT_WT_LIB/git.sh"
+# shellcheck source=lib/create.sh
+source "$GIT_WT_LIB/create.sh"
+# shellcheck source=lib/delete.sh
+source "$GIT_WT_LIB/delete.sh"
+# shellcheck source=lib/list.sh
+source "$GIT_WT_LIB/list.sh"
 
 usage() {
-	echo "Usage:"
-	echo "	git wt <command> [options]"
-	echo ""
-	echo "Commands:"
-	echo "	create [branch-name]"
-	echo "	delete"
-	exit 1
+	cat >&2 <<'EOF'
+Usage: git wt <command> [options]
+
+Commands:
+  create <branch> [base]   Create a worktree for a branch
+  delete [path-or-branch]  Remove a worktree (interactive with fzf)
+  list                     List the repository's worktrees
+  help                     Show this help
+  version                  Print the version
+
+Run `git wt <command> --help` for command-specific options.
+EOF
 }
 
 main() {
 	local command="${1:-help}"
+	[ $# -gt 0 ] && shift
 
 	case "$command" in
-
-	help)
-		usage
-		;;
-
-	create)
-		create_worktree "$1"
-		;;
-
-	delete)
-		delete_worktree
-		;;
-
-	*)
-		printf 'git wt: unknown command: %s\n' "$command" >&2
-		usage >&2
-		return 2
-		;;
+		create) create_worktree "$@" ;;
+		delete) delete_worktree "$@" ;;
+		list | ls) list_worktrees "$@" ;;
+		help | -h | --help) usage ;;
+		version | -v | --version) printf 'git-wt %s\n' "$GIT_WT_VERSION" ;;
+		*)
+			error "unknown command: $command"
+			usage
+			return 2
+			;;
 	esac
 }
 
