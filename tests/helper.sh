@@ -95,10 +95,11 @@ teardown_repo() {
 
 # Run `git wt` capturing stdout only; stderr is kept separately in
 # $STDERR_FILE so tests can assert on messages without mixing streams.
+#
+# shellcheck disable=SC2034  # output/status/stderr are read by the test files
 run_wt() {
 	STDERR_FILE="${TEST_TMP:-${TMPDIR:-/tmp}}/stderr.$$"
 	set +e
-	# shellcheck disable=SC2034  # output/status/stderr are read by callers
 	output=$("$GIT_WT" "$@" 2>"$STDERR_FILE")
 	status=$?
 	set -e
