@@ -1,0 +1,7 @@
+# Editor and OS cruft
+.DS_Store
+*.swp
+*~
+
+# Local install prefix, if you point PREFIX here while testing
+/prefix/

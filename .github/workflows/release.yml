@@ -7,6 +7,7 @@ on:
 
 jobs:
   tag:
+    name: Publish tag
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -15,12 +16,19 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Read version from git-wt
+      - name: Read version
         id: version
         run: |
-          version=$(sed -n 's/^readonly VERSION="\(.*\)"$/\1/p' git-wt)
+          version=$(sed -n 's/^readonly GIT_WT_VERSION="\(.*\)"$/\1/p' lib/version.sh)
           if [ -z "$version" ]; then
-            echo "❌ Could not parse VERSION from git-wt" >&2
+            echo "❌ Could not parse GIT_WT_VERSION from lib/version.sh" >&2
+            exit 1
+          fi
+          # Cross-check against what the CLI actually reports, so a stale
+          # parse can never publish a mislabelled tag.
+          reported=$(./git-wt version)
+          if [ "$reported" != "git-wt $version" ]; then
+            echo "❌ Version mismatch: lib/version.sh says '$version', CLI says '$reported'" >&2
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
@@ -37,6 +45,10 @@ jobs:
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Run tests before tagging
+        if: steps.check.outputs.exists == 'false'
+        run: make test
 
       - name: Create and push tag
         if: steps.check.outputs.exists == 'false'
